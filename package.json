@@ -1,9 +1,9 @@
 {
-  "name": "telesecretariat-orthophonie",
+  "name": "devlink-secretariat",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Outil interne de gestion des rendez-vous pour cabinet d'orthophonie (télésecrétariat).",
+  "description": "Outil interne de gestion des rendez-vous pour cabinet d'orthophonie (Devlink secrétariat).",
   "scripts": {
     "dev": "concurrently -n api,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "node --watch server/index.js",

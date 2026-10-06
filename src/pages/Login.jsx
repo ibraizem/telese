@@ -36,7 +36,7 @@ export default function Login() {
           <span className="sidebar__logo">OR</span>
           <strong style={{ fontSize: 17 }}>Cabinet d'orthophonie</strong>
         </div>
-        <h1>Télésecrétariat<br />du cabinet</h1>
+        <h1>Devlink secrétariat<br />du cabinet</h1>
         <p style={{ color: '#cfd9f2', maxWidth: 460 }}>
           Un outil interne simple et rapide pour prendre, confirmer et suivre
           les rendez-vous du cabinet — agenda partagé, patients, liste d'attente.

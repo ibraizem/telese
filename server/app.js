@@ -95,7 +95,7 @@ app.use('/api/auth/login', (req, res, next) => {
 app.use((req, res, next) => attachUser(req, res, next).catch(next));
 
 app.get('/api/health', (_req, res) =>
-  res.json({ ok: true, app: 'télésecrétariat-orthophonie', version: '1.0.0', time: new Date().toISOString() })
+  res.json({ ok: true, app: 'devlink-secretariat', version: '1.0.0', time: new Date().toISOString() })
 );
 
 app.use('/api/auth', authRoutes);

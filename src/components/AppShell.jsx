@@ -59,7 +59,7 @@ export default function AppShell({ children, onNewAppointment, onNewPatient }) {
           <span className="sidebar__logo">OR</span>
           <div>
             <div className="sidebar__name">{clinic?.name || 'Cabinet'}</div>
-            <div className="sidebar__tagline">Télésecrétariat</div>
+            <div className="sidebar__tagline">Devlink secrétariat</div>
           </div>
         </div>
 

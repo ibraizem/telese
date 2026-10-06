@@ -1,7 +1,7 @@
 /**
  * Boîte à outils d'interface : boutons, champs, fenêtres modales, badges.
  * volontairement sobre — pas d'animation inutile, contraste élevé,
- * cibles tactiles généreuses (usage quotidien en télésecrétariat).
+ * cibles tactiles généreuses (usage quotidien en secrétariat).
  */
 import { useEffect, useRef } from 'react';
 import { statusMeta } from './status';

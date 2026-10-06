@@ -1,7 +1,7 @@
-# Télésecrétariat — Cabinet d'orthophonie
+# Devlink secrétariat
 
 Outil interne de gestion des rendez-vous pour un cabinet d'orthophonie
-(télésecrétariat) : agenda partagé, patients, orthophonistes, disponibilités,
+(**Devlink secrétariat**) : agenda partagé, patients, orthophonistes, disponibilités,
 liste d'attente, génération de messages et statistiques.
 
 > **Données de santé** : l'application ne stocke **aucune donnée médicale**
@@ -74,9 +74,9 @@ Turso.
 ```bash
 # Installer la CLI Turso : https://docs.turso.tech/cli/installation
 turso auth login
-turso db create telesecretariat-orthophonie
-turso db show telesecretariat-orthophonie --url        # → TURSO_DATABASE_URL
-turso db tokens create telesecretariat-orthophonie     # → TURSO_AUTH_TOKEN
+turso db create devlink-secretariat
+turso db show devlink-secretariat --url        # → TURSO_DATABASE_URL
+turso db tokens create devlink-secretariat     # → TURSO_AUTH_TOKEN
 ```
 
 Puis, pour charger les données de démonstration dans la base distante :
