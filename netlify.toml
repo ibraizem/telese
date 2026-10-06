@@ -1,0 +1,31 @@
+# Configuration Netlify
+# - `dist/` (frontend Vite compilé) est publié sur le CDN.
+# - L'API Express tourne dans une fonction serverless (`/api/*` → fonction).
+# - La base de données est distante (Turso/libSQL) car les fonctions n'ont
+#   pas de disque persistant.
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  # Le client libSQL natif (`libsql`) n'est pas utilisé en production
+  # (on passe par le client HTTP) : on l'exclut du bundle esbuild.
+  external_node_modules = ["@libsql/client", "libsql"]
+
+# API : /api/… → fonction serverless Express (réécriture, l'URL reste /api/…).
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+
+# SPA React : toute autre route est servie par index.html.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
