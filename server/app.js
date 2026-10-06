@@ -16,7 +16,7 @@
  */
 import path from 'node:path';
 import express from 'express';
-import db from './db.js';
+import db, { isRemote } from './db.js';
 import { attachUser, purgeExpiredSessions } from './auth.js';
 import { ApiError } from './errors.js';
 import { ensureDefaultTemplates } from './routes/messages.js';
@@ -81,6 +81,32 @@ const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 
+/**
+ * Health check : placé AVANT le middleware d'initialisation afin de rester
+ * répondable même quand la base échoue. Il expose l'état de la dépendance
+ * (et jamais de secret) pour diagnostiquer un déploiement.
+ */
+app.get('/api/health', async (_req, res) => {
+  let dbStatus = 'ok';
+  let error = null;
+  try {
+    await prepare();
+  } catch (err) {
+    dbStatus = 'error';
+    error = String(err?.message || err).slice(0, 300);
+  }
+  res.json({
+    ok: true,
+    app: 'devlink-secretariat',
+    version: '1.0.0',
+    time: new Date().toISOString(),
+    // La base est-elle distante (Turso) ou bien un fichier local ?
+    remote: isRemote,
+    db: dbStatus,
+    ...(error ? { error } : {}),
+  });
+});
+
 // Initialisation paresseuse : chaque requête attend que la base soit prête.
 app.use((_req, _res, next) => {
   prepare().then(() => next()).catch(next);
@@ -131,10 +157,6 @@ app.use('/api/auth/login', (req, res, next) => {
 
 // attachUser est asynchrone : on propage explicitement ses erreurs.
 app.use((req, res, next) => attachUser(req, res, next).catch(next));
-
-app.get('/api/health', (_req, res) =>
-  res.json({ ok: true, app: 'devlink-secretariat', version: '1.0.0', time: new Date().toISOString() })
-);
 
 app.use('/api/auth', authRoutes);
 app.use('/api/patients', patientRoutes);
