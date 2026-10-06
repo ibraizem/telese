@@ -2,28 +2,26 @@
  * Couche base de données (libSQL / Turso).
  *
  * Historique : la V1 utilisait better-sqlite3 (fichier local, API synchrone).
- * Comme l'application est désormais déployée sur Netlify (fonctions
- * serverless, sans disque persistant), la base est hébergée sur Turso
- * (libSQL, compatible SQLite) et atteinte en HTTP.
+ * Comme l'application est déployée sur Netlify (fonctions serverless, sans
+ * disque persistant), la base est hébergée sur Turso (libSQL, compatible
+ * SQLite) et atteinte en HTTP.
  *
- * Pour garder le reste du code lisible et peu modifié, ce module expose un
- * « shim » qui imite l'API de better-sqlite3 (`db.prepare(sql).get/all/run`)
- * mais qui renvoie des promesses. Les appelants doivent donc `await`.
+ * Pour garder le reste du code lisible, ce module expose un « shim » qui imite
+ * l'API de better-sqlite3 (`db.prepare(sql).get/all/run`) mais qui renvoie des
+ * promesses : les appelants doivent `await`.
  *
- * - En développement et dans les tests : `file:data/app.db` (fichier local).
+ * Contrainte de déploiement : ce module ne doit contenir **ni `await` de haut
+ * niveau (top-level await) ni `import.meta`**, car Netlify charge la fonction
+ * depuis un lanceur CommonJS (sinon : ERR_REQUIRE_ESM / ERR_REQUIRE_ASYNC_MODULE).
+ * L'initialisation est donc paresseuse : `init()` est appelée par chaque requête.
+ *
+ * - En développement et dans les tests : fichier SQLite local.
  * - En production : `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN`.
- *
- * Choix d'architecture inchangés :
- * - Toutes les tables métier portent `clinic_id` (multi-tenant V2).
- * - Les dates/heures sont stockées en texte local naïf.
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(__dirname, '..', 'data');
-const DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, 'app.db');
+const DB_PATH = process.env.DB_PATH || path.resolve(process.cwd(), 'data', 'app.db');
 
 /**
  * URL de la base :
@@ -33,62 +31,6 @@ const DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, 'app.db');
 const url = process.env.TURSO_DATABASE_URL || `file:${DB_PATH}`;
 const authToken = process.env.TURSO_AUTH_TOKEN || undefined;
 export const isRemote = Boolean(process.env.TURSO_DATABASE_URL);
-
-if (!isRemote && !fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-
-// En production on n'embarque que le client HTTP (pas de module natif) ;
-// en local, le client Node gère les URL « file: ».
-const { createClient } = isRemote
-  ? await import('@libsql/client/web')
-  : await import('@libsql/client');
-
-export const client = createClient({ url, authToken });
-
-// Réglages locaux ; sur Turso le journal et les clés étrangères sont gérés.
-if (!isRemote) {
-  await client.execute('PRAGMA journal_mode = WAL').catch(() => {});
-}
-await client.execute('PRAGMA foreign_keys = ON').catch(() => {});
-
-/** Normalise une valeur de paramètre (libSQL refuse `undefined`/booléens). */
-const norm = (v) => {
-  if (v === undefined) return null;
-  if (typeof v === 'boolean') return v ? 1 : 0;
-  return v;
-};
-
-/** Renvoie une copie « objet simple » d'une ligne (au lieu des Row libSQL). */
-const plain = (row) => (row ? { ...row } : row);
-
-/**
- * Shim compatible better-sqlite3, mais asynchrone.
- * Usage : `const row = await db.prepare('SELECT … WHERE id = ?').get(id);`
- */
-export const db = {
-  prepare(sql) {
-    return {
-      get: async (...args) =>
-        plain((await client.execute({ sql, args: args.map(norm) })).rows[0]),
-      all: async (...args) =>
-        (await client.execute({ sql, args: args.map(norm) })).rows.map(plain),
-      run: async (...args) => {
-        const res = await client.execute({ sql, args: args.map(norm) });
-        return {
-          lastInsertRowid: res.lastInsertRowid != null ? Number(res.lastInsertRowid) : null,
-          changes: Number(res.rowsAffected),
-        };
-      },
-    };
-  },
-  /** Exécute un script SQL contenant plusieurs instructions. */
-  async exec(sql) {
-    await client.executeMultiple(sql);
-  },
-  /** Exécute plusieurs instructions en une seule transaction. */
-  async batch(statements) {
-    return client.batch(statements, 'write');
-  },
-};
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS clinics (
@@ -275,18 +217,101 @@ CREATE TABLE IF NOT EXISTS activity_logs (
 CREATE INDEX IF NOT EXISTS idx_logs_clinic ON activity_logs(clinic_id, created_at DESC);
 `;
 
-await db.exec(SCHEMA);
+/** Normalise une valeur de paramètre (libSQL refuse `undefined`/booléens). */
+const norm = (v) => {
+  if (v === undefined) return null;
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  return v;
+};
+
+/** Renvoie une copie « objet simple » d'une ligne (au lieu des Row libSQL). */
+const plain = (row) => (row ? { ...row } : row);
 
 /** Migration légère : ajoute une colonne si elle n'existe pas encore. */
-export async function ensureColumn(table, column, definition) {
-  const cols = await db.prepare(`PRAGMA table_info(${table})`).all();
-  if (!cols.some((c) => c.name === column)) {
-    await db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+async function ensureColumnOn(c, table, column, definition) {
+  const cols = (await c.execute(`PRAGMA table_info(${table})`)).rows.map(plain);
+  if (!cols.some((col) => col.name === column)) {
+    await c.executeMultiple(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 }
 
-// Colonnes ajoutées après la première version du schéma.
-await ensureColumn('appointments', 'initial_status', "TEXT NOT NULL DEFAULT 'confirmed'");
+let client = null;
+let initPromise = null;
+
+async function doInit() {
+  if (client) return client;
+  // En production on n'utilise que le client HTTP (aucun module natif) ;
+  // en local, le client Node gère les URL « file: ».
+  const { createClient } = isRemote
+    ? await import('@libsql/client/web')
+    : await import('@libsql/client');
+  const c = createClient({ url, authToken });
+
+  if (!isRemote) {
+    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+    await c.execute('PRAGMA journal_mode = WAL').catch(() => {});
+  }
+  await c.execute('PRAGMA foreign_keys = ON').catch(() => {});
+  await c.executeMultiple(SCHEMA);
+  // Le client est publié AVANT les migrations afin que `db.exec` ne réentre pas.
+  client = c;
+  await ensureColumnOn(c, 'appointments', 'initial_status', "TEXT NOT NULL DEFAULT 'confirmed'");
+  return c;
+}
+
+/** Ouvre la connexion et prépare le schéma (appelé automatiquement). */
+export function init() {
+  if (!initPromise) {
+    initPromise = doInit().catch((err) => {
+      if (!client) initPromise = null; // nouvelle tentative sur un échec avant connexion
+      throw err;
+    });
+  }
+  return initPromise;
+}
+
+/** Migration légère, exposée pour l'extérieur. */
+export async function ensureColumn(table, column, definition) {
+  const c = await init();
+  await ensureColumnOn(c, table, column, definition);
+}
+
+/**
+ * Shim compatible better-sqlite3, mais asynchrone.
+ * Usage : `const row = await db.prepare('SELECT … WHERE id = ?').get(id);`
+ */
+export const db = {
+  prepare(sql) {
+    return {
+      get: async (...args) => {
+        const c = await init();
+        return plain((await c.execute({ sql, args: args.map(norm) })).rows[0]);
+      },
+      all: async (...args) => {
+        const c = await init();
+        return (await c.execute({ sql, args: args.map(norm) })).rows.map(plain);
+      },
+      run: async (...args) => {
+        const c = await init();
+        const res = await c.execute({ sql, args: args.map(norm) });
+        return {
+          lastInsertRowid: res.lastInsertRowid != null ? Number(res.lastInsertRowid) : null,
+          changes: Number(res.rowsAffected),
+        };
+      },
+    };
+  },
+  /** Exécute un script SQL contenant plusieurs instructions. */
+  async exec(sql) {
+    const c = await init();
+    await c.executeMultiple(sql);
+  },
+  /** Exécute plusieurs instructions en une seule transaction. */
+  async batch(statements) {
+    const c = await init();
+    return c.batch(statements, 'write');
+  },
+};
 
 /** Compteurs utilisés pour l'audit (dev/seed). */
 export const counts = async () => {

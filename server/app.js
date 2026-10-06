@@ -3,14 +3,18 @@
  *
  * Ce module est partagé par :
  * - `server/index.js` (serveur longue durée, npm run dev / start) ;
- * - `netlify/functions/api.mjs` (fonction serverless sur Netlify).
+ * - `netlify/functions/api.js` (fonction serverless sur Netlify).
+ *
+ * Contrainte de déploiement : ni `await` de haut niveau, ni `import.meta`,
+ * car Netlify charge la fonction depuis un lanceur CommonJS. L'initialisation
+ * (base de données + cabinet par défaut) est donc faite paresseusement par
+ * le middleware `prepare()` qui précède toutes les routes.
  *
  * Sécurité V1 : sessions httpOnly, en-têtes durcis, limitation du taux de
  * connexion, journalisation, validation systématique des entrées.
  * Déployer derrière HTTPS pour chiffrer les données en transit.
  */
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import express from 'express';
 import db from './db.js';
 import { attachUser, purgeExpiredSessions } from './auth.js';
@@ -26,8 +30,6 @@ import waitingRoutes from './routes/waiting.js';
 import statsRoutes from './routes/stats.js';
 import adminRoutes from './routes/admin.js';
 import messageRoutes from './routes/messages.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /* ------------------------------------------------------------------ */
 /* Cabinet par défaut (créé au premier démarrage, remplacé par le seed) */
@@ -46,7 +48,31 @@ async function ensureClinic() {
   await ensureDefaultTemplates(clinic.id);
   return clinic;
 }
-export const clinic = await ensureClinic();
+
+let prepared = null;
+let clinicRow = null;
+
+/**
+ * Prépare l'application : connexion + schéma de la base, cabinet par défaut,
+ * nettoyage des sessions expirées. Idempotent (une seule exécution par process).
+ */
+function prepare() {
+  if (!prepared) {
+    prepared = (async () => {
+      clinicRow = await ensureClinic();
+      await purgeExpiredSessions();
+      return clinicRow;
+    })().catch((err) => {
+      prepared = null;
+      clinicRow = null;
+      throw err;
+    });
+  }
+  return prepared;
+}
+
+/** Cabinet courant (promesse résolue après initialisation). */
+export const getClinic = () => prepare();
 
 /* ------------------------------------------------------------------ */
 /* Application                                                         */
@@ -55,11 +81,23 @@ const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 
+// Initialisation paresseuse : chaque requête attend que la base soit prête.
+app.use((_req, _res, next) => {
+  prepare().then(() => next()).catch(next);
+});
+
 // Sur Netlify, une réécriture peut transmettre le chemin préfixé par la
-// fonction (/.netlify/functions/api). On le retire pour qu'Express voie /api/…
+// fonction (/.netlify/functions/api/…). On le retire pour qu'Express voie /api/…
+// Deux formes sont observables selon les versions de Netlify :
+//   /api/health                      → inchangé
+//   /.netlify/functions/api/health   → /api/health
+//   /.netlify/functions/api/api/health → /api/health
 app.use((req, _res, next) => {
   const prefix = '/.netlify/functions/api';
-  if (req.url.startsWith(prefix)) req.url = req.url.slice(prefix.length) || '/';
+  if (req.url.startsWith(prefix)) {
+    const stripped = req.url.slice(prefix.length) || '/';
+    req.url = stripped.startsWith('/api') ? stripped : `/api${stripped}`;
+  }
   next();
 });
 
@@ -116,7 +154,7 @@ app.use('/api', (_req, res) => res.status(404).json({ error: { code: 'not_found'
 /* Sur Netlify, les fichiers statiques sont servis par le CDN et cette  */
 /* partie n'est jamais atteinte.                                       */
 /* ------------------------------------------------------------------ */
-const distDir = path.join(__dirname, '..', 'dist');
+const distDir = path.resolve(process.cwd(), 'dist');
 app.use(express.static(distDir));
 app.get('*', (req, res, next) => {
   if (req.path.startsWith('/api')) return next();
@@ -138,8 +176,6 @@ app.use((err, _req, res, _next) => {
   console.error('[erreur]', err);
   res.status(500).json({ error: { code: 'internal_error', message: 'Erreur interne du serveur.' } });
 });
-
-await purgeExpiredSessions();
 
 export { app };
 export { requireAuth } from './auth.js';
